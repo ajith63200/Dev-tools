@@ -1,0 +1,1311 @@
+AutoSys — A Complete Guide
+What is AutoSys?
+AutoSys (now called Broadcom AutoSys Workload Automation) is an enterprise job scheduling and workload automation tool. It allows you to define, schedule, monitor, and manage batch jobs across distributed environments — on-premises or cloud.
+Think of it as a sophisticated cron, but enterprise-grade, with dependencies, monitoring, alerting, and cross-platform support.
+
+Core Concepts
+1. Job
+The fundamental unit in AutoSys. A job represents a task to be executed — a shell script, command, file watcher, or box.
+Three main job types:
+| Type | Description |
+| --- | --- |
+| CMD | Runs a command or script on a machine |
+| BOX | A container that groups related jobs together |
+| FW (File Watcher) | Triggers when a file appears/changes |
+
+2. Job Definition (JIL)
+Jobs are defined using JIL — Job Information Language. This is AutoSys's DSL for describing jobs.
+jil/* Simple command job */
+insert_job: my_first_job
+job_type: CMD
+command: /home/user/scripts/run_etl.sh
+machine: prod-server-01
+owner: etluser
+permission: gx, wx
+date_conditions: 1
+days_of_week: mon, tue, wed, thu, fri
+start_times: "08:00"
+description: "Daily ETL job"
+
+3. Box Job (Grouping)
+A box groups jobs and controls their collective execution.
+jil/* Define the box */
+insert_job: etl_pipeline_box
+job_type: BOX
+date_conditions: 1
+days_of_week: all
+start_times: "06:00"
+
+/* Job inside the box */
+insert_job: extract_job
+job_type: CMD
+box_name: etl_pipeline_box
+command: /scripts/extract.sh
+machine: etl-server
+condition: success(load_job)   ← depends on another job
+
+4. Conditions (Dependencies)
+This is AutoSys's power feature — jobs can depend on other jobs.
+jilcondition: success(job_A) and success(job_B)
+condition: done(job_A) or failure(job_B)
+condition: success(job_A) and notrunning(job_B)
+| Condition | Meaning |
+| --- | --- |
+| success(job) | Job completed successfully |
+| failure(job) | Job failed |
+| done(job) | Job finished (any status) |
+| notrunning(job) | Job is not currently running |
+| terminated(job) | Job was terminated |
+
+5. Job Statuses
+| Status | Meaning |
+| --- | --- |
+| STARTING | Job is being initiated |
+| RUNNING | Currently executing |
+| SUCCESS | Completed with exit code 0 |
+| FAILURE | Completed with non-zero exit code |
+| INACTIVE | Not yet activated for the day |
+| ACTIVATED | Waiting for conditions to be met |
+| ON_HOLD | Manually put on hold |
+| ON_ICE | Excluded from processing entirely |
+| TERMINATED | Forcefully stopped |
+| RESTART | Marked for restart |
+
+Key Commands
+sendevent — Trigger or control jobs manually
+bash# Force-start a job
+sendevent -E FORCE_STARTJOB -J my_first_job
+
+# Put a job on hold
+sendevent -E JOB_ON_HOLD -J my_first_job
+
+# Release a job from hold
+sendevent -E JOB_OFF_HOLD -J my_first_job
+
+# Mark a job as success manually
+sendevent -E CHANGE_STATUS -s SUCCESS -J my_first_job
+
+# Kill a running job
+sendevent -E KILLJOB -J my_first_job
+autorep — Report on job status
+bash# Check status of a specific job
+autorep -J my_first_job
+
+# Check all jobs in a box
+autorep -J etl_pipeline_box -l
+
+# Check job details (full)
+autorep -J my_first_job -d
+
+# List all jobs matching a pattern
+autorep -J "etl_*"
+
+# Show machine status
+autorep -M all
+jil — Create/modify job definitions
+bash# Load a JIL file
+jil < my_jobs.jil
+
+# Delete a job
+echo "delete_job: my_first_job" | jil
+
+JIL Attributes Reference
+jilinsert_job: job_name          /* Job name — unique identifier */
+job_type: CMD | BOX | FW      /* Type of job */
+command: /path/to/script.sh   /* Command to run (CMD only) */
+machine: hostname              /* Where to run */
+owner: unix_user               /* Owning user */
+box_name: parent_box           /* Parent box, if any */
+
+/* Scheduling */
+date_conditions: 1             /* Enable date/time scheduling */
+days_of_week: mon,wed,fri      /* Days to run */
+start_times: "09:00, 14:00"   /* Start times */
+run_calendar: my_calendar      /* Use a named calendar */
+exclude_calendar: holidays     /* Exclude holidays */
+
+/* Dependencies */
+condition: success(other_job)  /* Run only if condition met */
+
+/* Behavior */
+max_run_alarm: 60              /* Alert if running > 60 min */
+min_run_alarm: 5               /* Alert if running < 5 min */
+alarm_if_fail: 1               /* Raise alarm on failure */
+n_retrys: 3                    /* Retry count on failure */
+box_failure: 1                 /* Fail box if this job fails */
+send_notification: 1           /* Send email on events */
+notification_emailaddress: you@company.com
+
+/* File watcher (FW only) */
+watch_file: /data/input/*.csv
+watch_interval: 60             /* Check every 60 seconds */
+
+Calendars
+Calendars let you define custom schedules (e.g., business days, fiscal periods).
+jil/* Define a calendar */
+insert_calendar: us_business_days
+days: all
+holidays: 01/01,07/04,12/25    /* Exclude specific dates */
+
+/* Use in a job */
+insert_job: monthly_report
+run_calendar: us_business_days
+
+Global Variables
+AutoSys supports global variables shared across jobs:
+bash# Set a global variable
+sendevent -E SET_GLOBAL -G "MY_VAR=hello_world"
+
+# Use in JIL
+command: /scripts/run.sh $MY_VAR
+
+Architecture Overview
+┌─────────────────────────────────────────┐
+│          AutoSys Components             │
+│                                         │
+│  ┌──────────┐    ┌──────────────────┐   │
+│  │  Event   │───▶│   Event Server   │   │
+│  │ Manager  │    │  (Scheduler DB)  │   │
+│  └──────────┘    └──────────────────┘   │
+│       │                                 │
+│       ▼                                 │
+│  ┌──────────────────────────────────┐   │
+│  │        Remote Agents             │   │
+│  │  (installed on target machines)  │   │
+│  └──────────────────────────────────┘   │
+└─────────────────────────────────────────┘
+
+Event Server — The brain; manages the schedule database
+Event Manager — Processes events and triggers jobs
+Remote Agent — Runs on each target machine, executes jobs locally
+
+
+Common Scenarios
+Scenario 1: Run job B only after job A succeeds
+jilinsert_job: job_B
+condition: success(job_A)
+Scenario 2: Run a job every weekday at 9 AM
+jildate_conditions: 1
+days_of_week: mon,tue,wed,thu,fri
+start_times: "09:00"
+Scenario 3: Retry a job 3 times on failure
+jiln_retrys: 3
+Scenario 4: Watch for a file and trigger a job
+jilinsert_job: file_trigger
+job_type: FW
+watch_file: /landing/data_*.csv
+watch_interval: 30
+
+insert_job: process_file
+condition: success(file_trigger)
+
+Tips & Best Practices
+
+Always use BOX jobs to group related jobs — it makes dependency management and monitoring much cleaner.
+Use autorep liberally for debugging — autorep -J jobname -d gives full detail.
+Set max_run_alarm on all long-running jobs to catch hangs early.
+Avoid hardcoding paths — use global variables or environment files.
+Use calendars instead of hardcoding days_of_week for complex schedules.
+Test JIL syntax in a non-prod environment before pushing to production.
+
+
+Want me to go deeper on any specific area — like advanced conditions, calendar management, AutoSys web UI, alarms/notifications, or migration from cron to AutoSys?You said: what is the difference between onice and onhold.what is the difference between on_ice and on_hold. interview ready answer pleaseMar 23Claude responded: ONHOLD vs ONICE — Interview AnswerON_HOLD vs ON_ICE — Interview Answer
+
+ON_HOLD and ON_ICE both stop a job from running, but they differ in how the scheduler treats them and what happens when the condition is met.
+
+ON_HOLD
+
+"The job is paused but still watching."
+
+
+The job is temporarily suspended.
+AutoSys keeps evaluating its conditions (time, dependencies).
+Once released (JOB_OFF_HOLD), the job immediately runs if its conditions were already satisfied during the hold period.
+Used when you want to temporarily delay a job but not lose the trigger.
+
+Real-world use: A job is scheduled for 9 AM but there's a server maintenance window. You put it ON_HOLD, maintenance completes at 9:30 AM, you release it — it fires right away.
+
+ON_ICE
+
+"The job is completely frozen — invisible to the scheduler."
+
+
+The job is fully excluded from AutoSys processing.
+AutoSys stops evaluating conditions entirely — time windows and dependencies are ignored.
+When taken OFF_ICE, the job does not auto-trigger retroactively — it waits for the next scheduled cycle.
+Used when you want to permanently or long-term disable a job without deleting it.
+
+Real-world use: A downstream feed is decommissioned for a month. You put the dependent job ON_ICE so it doesn't clutter monitoring or generate false alerts.
+
+Side-by-Side
+| Feature | ON_HOLD | ON_ICE |
+| --- | --- | --- |
+| Conditions evaluated? | ✅ Yes | ❌ No |
+| Auto-triggers on release? | ✅ Yes (if condition already met) | ❌ No (waits for next cycle) |
+| Appears in monitoring? | ✅ Yes | ❌ Effectively hidden |
+| Use case | Short-term pause | Long-term disable |
+| Release event | JOB_OFF_HOLD | JOB_OFF_ICE |
+
+One-Line Summary to Close Your Answer
+
+"ON_HOLD is a pause — the scheduler keeps watching and the job catches up on release. ON_ICE is a freeze — the scheduler ignores the job completely, and it only runs fresh in the next cycle."
+You said: for example, I have job A, due to some upstream process issuei held the job on_hold, it time condition is start everyday 5 Am,  but i realeased the job 4.for example, I have job A, due to some upstream process issuei held the job on_hold, it time condition is start everyday 5 Am,  but i realeased the job 4.45 Am,  what happes, exactlyMar 23Claude responded: Your Exact Scenario — Released at 4:45 AM, Scheduled at 5:00 AMAnalyzed job scheduling behavior when released before scheduled timeAnalyzed job scheduling behavior when released before scheduled timeYour Exact Scenario — Released at 4:45 AM, Scheduled at 5:00 AM
+
+The job runs normally at 5:00 AM. Nothing unusual happens.
+Here's why:
+
+Timeline Breakdown
+4:45 AM  →  You release the job (JOB_OFF_HOLD)
+             Job status: INACTIVE / ACTIVATED (waiting...)
+
+5:00 AM  →  Time condition is NOW met
+             Job fires normally ✅
+Since you released it before the scheduled time, the job was free and watching when 5 AM hit — so it behaves exactly as if it was never held.
+
+Now here's the KEY interview follow-up point —
+What if you had released it at 5:15 AM instead?
+5:00 AM  →  Time condition was met — but job was still ON_HOLD
+             AutoSys noted the condition was satisfied
+
+5:15 AM  →  You release the job
+             AutoSys says "condition was already met during hold"
+             Job fires IMMEDIATELY at 5:15 AM ✅
+This is the critical behavior of ON_HOLD — it remembers that the condition was satisfied, and triggers the job the moment you release it. The job doesn't wait until the next day's 5 AM.
+
+Contrast with ON_ICE in the same situation
+If the job was ON_ICE and you released it at 5:15 AM:
+5:00 AM  →  Scheduler didn't even look at this job (frozen)
+
+5:15 AM  →  You take it OFF_ICE
+             Scheduler sees no pending trigger
+             Job waits until NEXT day 5:00 AM ❌ (no catch-up)
+
+One-line to nail it in interviews
+
+"ON_HOLD is like pausing a stopwatch — time keeps moving and the moment you unpause, it catches up. ON_ICE is like switching off the stopwatch entirely — it resets and only starts fresh next cycle."
+You said: explain autosys architecture to explain into the interviewerexplain autosys architecture to explain into the interviewerMar 23Claude responded: AutoSys Architecture — Interview ExplanationSynthesized AutoSys architecture framework for interview preparationSynthesized AutoSys architecture framework for interview preparationAutoSys Architecture — Interview Explanation
+
+Start With the Big Picture (Say This First)
+
+"AutoSys follows a client-server architecture with three main layers — the Scheduler (brain), the Database (memory), and the Remote Agents (hands). Everything revolves around an event-driven model where jobs are triggered based on time, dependency, or external events."
+
+
+The Core Components
+1. 🧠 Event Server (The Brain)
+
+The central scheduler of AutoSys
+Constantly monitors the database for jobs that are ready to run
+Evaluates time conditions, dependencies, and events
+When a job's conditions are met, it sends a trigger to the appropriate agent
+There is typically a primary + shadow Event Server for high availability
+
+
+"Think of it as the conductor of an orchestra — it doesn't play any instrument itself, it just tells everyone when to play."
+
+
+2. 🗄️ AutoSys Database (The Memory)
+
+Usually an Oracle or Sybase database
+Stores everything — job definitions, schedules, statuses, history, calendars, global variables
+The Event Server reads from and writes to this DB constantly
+All autorep queries and jil commands hit this database
+
+
+"This is the single source of truth. If you want to know the status of any job, at any point in time, the answer is in this database."
+
+
+3. 🤖 Remote Agent (The Hands)
+
+A lightweight process installed on every target machine where jobs run
+Receives execution instructions from the Event Server
+Runs the actual command/script locally on that machine
+Reports back status updates (RUNNING, SUCCESS, FAILURE) to the Event Server
+No agent = no job execution on that machine
+
+
+"The agent is the boots on the ground. The Event Server decides what to run, but the Agent is the one who actually does it."
+
+
+4. 💻 Client Utilities (The Interface)
+These are the tools you as an operator use to interact with AutoSys:
+| Tool | Purpose |
+| --- | --- |
+| jil | Define/modify/delete jobs |
+| autorep | Query job status and history |
+| sendevent | Manually trigger events (hold, release, force-start) |
+| AutoSys GUI / WAAE Web UI | Visual monitoring and management |
+
+How It All Flows Together
+┌─────────────────────────────────────────────────────────┐
+│                     CLIENT LAYER                        │
+│         jil / autorep / sendevent / Web UI              │
+└──────────────────┬──────────────────────────────────────┘
+                   │  reads/writes
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│                   DATABASE LAYER                        │
+│         Oracle/Sybase — Job Definitions,                │
+│         Statuses, Calendars, Global Variables           │
+└──────────────────┬──────────────────────────────────────┘
+                   │  polls continuously
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│                  EVENT SERVER LAYER                     │
+│      Scheduler — evaluates conditions, fires triggers   │
+│      Primary Event Server + Shadow (HA failover)        │
+└──────────────────┬──────────────────────────────────────┘
+                   │  sends job execution order
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│                   AGENT LAYER                           │
+│   Machine A        Machine B        Machine C           │
+│  [Remote Agent]   [Remote Agent]   [Remote Agent]       │
+│  runs script.sh   runs etl.py      runs load.sh         │
+└─────────────────────────────────────────────────────────┘
+                   │  reports back status
+                   └──────────────────▶ Event Server updates DB
+
+The Event-Driven Flow — Step by Step
+Walk the interviewer through exactly what happens when a job runs:
+1. DEFINITION
+   Admin loads a JIL file → job stored in the Database
+
+2. ACTIVATION
+   At the start of the processing day, Event Server
+   activates all jobs → status moves from INACTIVE to ACTIVATED
+
+3. CONDITION CHECK
+   Event Server continuously polls the DB:
+   "Is it 5 AM? ✅  Is job_A successful? ✅  → Fire this job"
+
+4. DISPATCH
+   Event Server sends execution command to the
+   Remote Agent on the target machine
+
+5. EXECUTION
+   Remote Agent runs the command/script locally
+   Status updated to RUNNING in the DB
+
+6. REPORTING
+   Job finishes → Agent reports SUCCESS or FAILURE
+   Event Server updates status in the DB
+
+7. CASCADE
+   Downstream jobs whose condition was success(this_job)
+   now get activated and the cycle continues
+
+High Availability (Bonus Point)
+
+"In production, AutoSys runs a Primary + Shadow Event Server configuration. The Shadow constantly mirrors the Primary. If the Primary goes down, the Shadow takes over automatically — this ensures the scheduler never has a single point of failure."
+
+
+How to Deliver This in the Interview
+Open with the three-layer summary (brain, memory, hands).
+Draw the diagram on a whiteboard if given the chance — interviewers love it.
+Walk through the flow step by step using a real example like "a 5 AM ETL job".
+Close with the HA point — it shows you think about production-grade setups.
+
+
+"In one line — AutoSys is an event-driven scheduler where the Event Server is the brain, the Database is the memory, and Remote Agents are the executors. Every job lifecycle — from definition to execution to status reporting — flows through these three layers."
+You said: if  a critcical autosys batch job fgailed at midnight, how do you fix the issue, walk in me to the answer 9if  a critcical autosys batch job fgailed at midnight, how do you fix the issue, walk in me to the answer 9Mar 23Claude responded: Critical AutoSys Job Failed at Midnight — Full WalkthroughArchitected structured incident response for batch job failureArchitected structured incident response for batch job failureCritical AutoSys Job Failed at Midnight — Full Walkthrough
+
+Your Mindset Going In
+
+"When a critical job fails at midnight, there are two parallel tracks — fix the immediate problem and protect the downstream jobs. Never just restart blindly."
+
+
+Step 1 — Detect & Assess (First 5 Minutes)
+First thing, don't panic, gather facts.
+bash# Check the job status immediately
+autorep -J failed_job_name -d
+
+# Check the last run details — exit code, start time, end time
+autorep -J failed_job_name -s
+What you're looking for:
+
+What is the exact status? (FAILURE vs TERMINATED vs still RUNNING?)
+What time did it fail?
+What was the exit code? (non-zero means script-level failure)
+How long did it run before failing?
+
+
+Step 2 — Check the Logs (Root Cause First)
+bash# AutoSys job report with full detail
+autorep -J failed_job_name -d
+
+# Then go to the actual job log on the target machine
+ssh prod-server-01
+
+# Check the script's own log file
+tail -500 /logs/failed_job_name_YYYYMMDD.log
+
+# Check AutoSys agent log
+tail -100 /opt/autosys/logs/JOBNAME.log
+Ask yourself these questions:
+| Question | Points to |
+| --- | --- |
+| Did the script throw an error? | Application/data issue |
+| Did it time out? | Performance/infra issue |
+| Did it not start at all? | Agent down / machine issue |
+| Did it fail midway? | Data or resource issue |
+| Exit code 127? | Script not found / path issue |
+| Exit code 137? | Killed — memory/OOM issue |
+
+Step 3 — Check the Machine & Agent
+bash# Is the target machine reachable?
+ping prod-server-01
+
+# Is the AutoSys agent running on that machine?
+autorep -M prod-server-01
+
+# Check agent status
+autoping -M prod-server-01
+If the agent is down — that's your culprit. The job never even executed.
+bash# Restart the agent on the target machine
+cd /opt/autosys/bin
+./agent start
+
+Step 4 — Assess Downstream Impact
+
+"This is the most critical step people skip in interviews."
+
+bash# See all jobs that depend on this failed job
+autorep -J "pipeline_box_*" -l
+
+# Or check the box it belongs to
+autorep -J parent_box_name -l
+You need to know:
+
+Which downstream jobs are now stuck in ACTIVATED state waiting for this job to succeed?
+Is there a business deadline for those downstream jobs?
+Can they be skipped today or are they mandatory?
+
+
+Step 5 — Fix the Root Cause
+Scenario A — Script/Data Issue
+bash# Fix the data or script issue manually
+# Re-run the underlying script manually first to validate
+/scripts/failed_job.sh
+
+# If it succeeds manually, you're ready to restart in AutoSys
+Scenario B — Machine/Resource Issue
+bash# Check disk space
+df -h
+
+# Check memory
+free -m
+
+# Check CPU
+top
+Scenario C — Agent Was Down
+bash# Restart the agent, then re-trigger the job
+Scenario D — Upstream dependency didn't complete
+bash# Check what this job depended on
+autorep -J upstream_job -d
+# Fix upstream first, then cascade down
+
+Step 6 — Restart the Job
+Once root cause is fixed — now you restart.
+bash# Option 1 — Force start the job (ignores conditions)
+sendevent -E FORCE_STARTJOB -J failed_job_name
+
+# Option 2 — Change status to SUCCESS if job actually completed
+# but AutoSys didn't pick it up correctly
+sendevent -E CHANGE_STATUS -s SUCCESS -J failed_job_name
+
+# Option 3 — If job is ON_HOLD, release it
+sendevent -E JOB_OFF_HOLD -J failed_job_name
+
+"I prefer FORCE_STARTJOB over manually marking SUCCESS — because marking SUCCESS without the job actually running is dangerous. Downstream jobs will trigger based on a lie."
+
+
+Step 7 — Monitor the Restart
+bash# Watch the job in real time
+watch -n 10 "autorep -J failed_job_name -d"
+
+# Tail the log simultaneously
+tail -f /logs/failed_job_name.log
+Don't walk away. Stay until it hits SUCCESS.
+
+Step 8 — Unblock Downstream Jobs
+Once your job hits SUCCESS, downstream jobs in ACTIVATED state should auto-trigger if their only condition was success(failed_job_name).
+bash# Verify downstream jobs picked up and are running
+autorep -J downstream_job_1 -d
+autorep -J downstream_job_2 -d
+If they don't auto-trigger:
+bash# Force start them manually
+sendevent -E FORCE_STARTJOB -J downstream_job_1
+
+Step 9 — Communicate & Document
+
+"This is what separates a junior operator from a senior one."
+
+
+Immediately notify stakeholders — business teams, managers, on-call leads
+State: what failed, why, what you did, what the current status is
+Estimate the delay — "downstream jobs will complete by 3 AM instead of 2 AM"
+After resolution — write an incident report with root cause and fix
+
+
+The Full Mental Flow
+Job Failed
+    │
+    ▼
+autorep -d  →  What exactly failed?
+    │
+    ▼
+Check logs  →  WHY did it fail?
+    │
+    ▼
+Check machine/agent  →  Infrastructure OK?
+    │
+    ▼
+Assess downstream  →  Who is impacted?
+    │
+    ▼
+Fix root cause  →  FIRST fix, THEN restart
+    │
+    ▼
+sendevent FORCE_STARTJOB
+    │
+    ▼
+Monitor to SUCCESS
+    │
+    ▼
+Verify downstream unblocked
+    │
+    ▼
+Communicate & Document
+
+Killer Closing Line for the Interview
+
+"The biggest mistake people make is restarting the job immediately without knowing why it failed. If you restart without fixing the root cause, it'll fail again — and now you've wasted 20 minutes and made the situation worse. Always diagnose first, fix second, restart third."
+You said: write intervirew ready answer to explain in the interviewwrite intervirew ready answer to explain in the interviewMar 23Claude responded: Interview-Ready Answer — Critical Job Failed at MidnightArchitected polished interview response for crisis scenarioArchitected polished interview response for crisis scenarioInterview-Ready Answer — Critical Job Failed at Midnight
+
+
+Use this as a spoken answer. Confident, structured, shows experience.
+
+
+The Answer
+"When I get an alert that a critical batch job has failed at midnight, the first thing I do is resist the urge to restart it immediately — because restarting without knowing the root cause will just fail again and waste precious time.
+I start by running autorep -J jobname -d to get the full picture — what status it's in, what time it failed, and what the exit code is. The exit code alone tells me a lot — a 127 means the script wasn't found, a 137 means the job was killed, probably an out-of-memory issue.
+Then I go straight to the logs — both the application log on the target machine and the AutoSys agent log — to find the exact line where it broke.
+While I'm doing that, I'm also asking myself — is the agent even up on that machine? I run autoping -M machinename to verify. If the agent is down, the job never executed at all — and that changes everything.
+Now here's the step most people skip — before I even think about fixing the failed job, I run autorep on the entire box or pipeline to understand the downstream blast radius. I need to know which jobs are now stuck in ACTIVATED state waiting for this job to succeed, and whether there's a business deadline attached to them. That determines my urgency.
+Once I understand the root cause — whether it's a data issue, a disk space problem, an infra issue, or an upstream job that didn't complete — I fix that first. I even manually run the script on the server to validate the fix before touching AutoSys.
+Only then do I restart — using sendevent -E FORCE_STARTJOB. I never just mark the job as SUCCESS without it actually running, because downstream jobs will trigger based on a lie and you'll have corrupted or missing data further down the pipeline.
+After it hits SUCCESS, I watch the downstream jobs to make sure they auto-trigger. If they don't, I force-start them manually.
+And throughout all of this — I'm communicating. I notify the business and my manager early, I give them an honest ETA on when the pipeline will complete, and after everything is resolved I write up an incident report with the root cause, the fix, and what we can do to prevent it next time.
+In short — my approach is always diagnose first, fix second, restart third, communicate throughout."
+
+Why This Answer Works in an Interview
+| What you showed | Why it impresses |
+| --- | --- |
+| You don't restart blindly | Shows maturity and experience |
+| You check exit codes | Shows technical depth |
+| You assess downstream impact | Shows you think like an engineer, not just an operator |
+| You test the fix manually first | Shows discipline |
+| You mention communication | Shows ownership and professionalism |
+| You mention incident report | Shows long-term thinking |
+
+One Line to Open or Close With
+
+"My rule is simple — a job failing at midnight is not the emergency. The real emergency is not knowing why it failed and making it worse."
+You said: give me top 10 autosys intverview question and answer to crack the l2 postions intevrirw at hexawaregive me top 10 autosys intverview question and answer to crack the l2 postions intevrirw at hexawareMar 23Claude responded: Top 10 AutoSys Interview Q&A — L2 Position at HexawareSynthesized comprehensive AutoSys interview preparation for L2 rolesSynthesized comprehensive AutoSys interview preparation for L2 rolesTop 10 AutoSys Interview Q&A — L2 Position at Hexaware
+
+
+L2 means they expect you to go beyond basics. They want troubleshooting depth, real scenarios, and operational judgment — not just definitions.
+
+
+Q1. What is the difference between FORCE_STARTJOB and CHANGE_STATUS to SUCCESS?
+"This is a very important distinction in production operations.
+FORCE_STARTJOB actually executes the job — it ignores all conditions, time windows, and dependencies and physically runs the script on the target machine. The job goes through STARTING → RUNNING → SUCCESS or FAILURE.
+CHANGE_STATUS to SUCCESS is a paper update — it just changes the status in the AutoSys database without running anything. The script never executes.
+I use FORCE_STARTJOB when the job genuinely needs to run. I use CHANGE_STATUS to SUCCESS only when the job's work was already done outside of AutoSys — for example, someone ran the script manually directly on the server — and I just need to unblock the downstream jobs.
+The danger of misusing CHANGE_STATUS is serious — if you mark a job SUCCESS without the work being done, downstream jobs trigger on bad or missing data, which can corrupt an entire pipeline."
+
+Q2. A job is stuck in RUNNING state for 5 hours but it normally completes in 30 minutes. What do you do?
+"First I check whether the job is actually running or just showing RUNNING in AutoSys while the process is already dead on the server.
+I SSH to the target machine and run ps -ef | grep scriptname to see if the process is truly alive. I also check the application log to see the last activity timestamp.
+Scenario A — Process is dead but AutoSys still shows RUNNING:
+This is a zombie status. The agent lost communication mid-execution. I kill it using sendevent -E KILLJOB and then restart after fixing the root cause.
+Scenario B — Process is genuinely running but slow:
+I check top, df -h, and iostat to see if there's a CPU spike, disk full situation, or I/O bottleneck. I check if there are any database locks or upstream feeds that are delayed.
+Once I identify the cause — I either let it complete if it's close, or kill and restart with the issue fixed. I also immediately notify stakeholders about the delay and give a revised ETA.
+This is also why I always recommend setting max_run_alarm on every critical job — it alerts you automatically when a job exceeds its expected runtime."
+
+Q3. What happens to downstream jobs if an upstream job fails? How do you handle it?
+"When an upstream job fails, all downstream jobs that have condition: success(upstream_job) will stay in ACTIVATED state — they're waiting, watching, but never triggering.
+My immediate action is to run autorep on the entire box to map the full dependency chain and understand how many jobs are blocked and what the business impact is.
+Then I have three options depending on the situation:
+Option 1 — Fix and rerun the upstream job. Once it hits SUCCESS, downstream jobs auto-trigger naturally.
+Option 2 — If the upstream job's work was done manually, I use CHANGE_STATUS to SUCCESS on it to release the downstream chain.
+Option 3 — If the upstream job is irrelevant for today and downstream jobs can run independently, I FORCE_STARTJOB each downstream job individually.
+The key decision factor is always — did the upstream job's data actually get produced? If yes, option 2 is safe. If no, option 3 is risky and needs business sign-off."
+
+Q4. What is a BOX job and why do we use it?
+"A BOX is a container job that groups related jobs together into a logical pipeline.
+We use BOX jobs for three main reasons:
+First — dependency management. Instead of writing complex cross-job conditions everywhere, you control the flow inside the box cleanly.
+Second — collective control. You can put an entire BOX on hold, on ice, or force-start it as a unit — without touching each individual job.
+Third — monitoring clarity. In a production environment with hundreds of jobs, grouping them into boxes like ETL_EXTRACT_BOX, ETL_TRANSFORM_BOX, ETL_LOAD_BOX makes it much easier to see where a pipeline is at a glance.
+One important behavior — if box_failure is set to 1 on a job inside the box, a failure in that job marks the entire box as FAILURE and stops other jobs in the box from running. This is useful for critical jobs where there's no point continuing the pipeline if a key step fails."
+
+Q5. Explain what a typical AutoSys production issue investigation looks like end to end.
+"In production, when I get a failure alert, I follow a structured approach:
+Step 1 — autorep -J jobname -d to get status, exit code, run times.
+Step 2 — Check application logs on the target machine for the exact error.
+Step 3 — autoping -M machinename to confirm the agent is alive.
+Step 4 — Map downstream impact using autorep on the parent box.
+Step 5 — Identify root cause — is it a script error, infra issue, data issue, or agent issue?
+Step 6 — Fix the root cause. Validate the fix by running the script manually on the server.
+Step 7 — sendevent -E FORCE_STARTJOB to restart.
+Step 8 — Monitor to SUCCESS. Verify downstream jobs trigger.
+Step 9 — Communicate status to stakeholders throughout.
+Step 10 — Post-resolution, raise an incident ticket with RCA and preventive actions.
+The golden rule I follow — never restart without knowing why it failed. Blind restarts waste time and can make things worse."
+
+Q6. What is the difference between run_calendar and exclude_calendar?
+"Both are used to control which days a job runs, but they work in opposite directions.
+run_calendar is a whitelist — the job runs ONLY on the dates specified in that calendar. For example, a month-end report job would use a run_calendar that contains only the last business day of each month.
+exclude_calendar is a blacklist — the job runs on its normal schedule but SKIPS the dates in that calendar. This is commonly used for public holidays — a daily job that should not run on Christmas, New Year, etc.
+You can also combine both. For example — run every weekday, but exclude public holidays. In JIL that looks like:
+jildays_of_week: mon,tue,wed,thu,fri
+exclude_calendar: public_holidays
+In a Hexaware production environment, this is heavily used for client-specific SLA-driven jobs where business calendars differ by geography or client."
+
+Q7. A job ran successfully but the output file was not generated. How do you approach this?
+"This is a classic case where AutoSys shows SUCCESS but the business outcome didn't happen. AutoSys only cares about the exit code of the script — if the script exits with 0, AutoSys marks it SUCCESS regardless of what the script actually did.
+My approach:
+First — I check the application log in detail. A script can exit with code 0 even if it hit a non-fatal error or warning that caused it to skip the file generation.
+Second — I check the target output directory to confirm the file is truly missing and not just in a different location or with a different timestamp.
+Third — I look at whether the script has conditional logic — for example, 'if no input data found, skip and exit 0.' If the upstream input file was empty or missing, the script may have exited cleanly without generating output.
+Fourth — I check disk space on the output directory. Scripts sometimes silently fail to write files when disk is full but still exit 0.
+The fix depends on root cause — if it's a data issue I coordinate with the upstream team. If it's a script logic issue I raise it with the app team. Then I rerun the job after the fix.
+This scenario is also a strong argument for adding file watcher jobs downstream as a validation layer — don't just depend on AutoSys SUCCESS status, verify the actual output exists."
+
+Q8. What is a global variable in AutoSys and where have you used it?
+"A global variable in AutoSys is a key-value pair stored at the scheduler level that can be accessed by any job across the environment.
+You set it using sendevent:
+bashsendevent -E SET_GLOBAL -G "ENV=PRODUCTION"
+sendevent -E SET_GLOBAL -G "FILE_DATE=20240315"
+And reference it in JIL like:
+jilcommand: /scripts/process.sh $ENV $FILE_DATE
+Real-world usage I've seen and handled:
+First — date parameters. Instead of hardcoding dates in scripts, the scheduler sets a global BUSINESS_DATE every morning and all jobs pick it up dynamically.
+Second — environment switching. A global RUN_ENV=PROD or RUN_ENV=DR flag controls which database or server jobs connect to — very useful during DR drills.
+Third — pipeline control flags. A global FEED_RECEIVED=YES can be set by a file watcher job and downstream jobs check this flag before proceeding.
+The risk with global variables is that they are shared across ALL jobs — so changing one carelessly can impact unintended jobs. Always document and control who can modify globals in production."
+
+Q9. How do you handle a scenario where AutoSys itself is down?
+"If the AutoSys Event Server itself is down, no jobs will trigger — it's a full scheduler outage. This is a P1 incident.
+My immediate steps:
+First — confirm it's the Event Server and not just my client connection. I check with another team member and verify using the AutoSys admin console.
+Second — check if the Shadow Event Server has taken over. In a properly configured HA setup, the Shadow should automatically promote itself to Primary within minutes.
+bash# Check event server status
+chk_evt_svr
+Third — if Shadow hasn't taken over, escalate to the AutoSys admin team or Broadcom support immediately. This is beyond L2 scope — it needs DBA and infrastructure teams.
+Fourth — while the scheduler is down, identify which critical jobs were supposed to run and assess if any can be run manually on the server to protect business SLAs.
+Fifth — once the Event Server is back, check all job statuses. Jobs that were ACTIVATED during the outage may need to be force-started manually since they missed their time windows.
+Sixth — communicate a full timeline to all stakeholders.
+The key message here is — L2 does not fix the Event Server itself. L2's job is to minimize business impact while the outage is being resolved."
+
+Q10. What are your best practices for AutoSys job design? (Asked to test seniority)
+"This question separates someone who just operates AutoSys from someone who owns it. My best practices are:
+One — Always group jobs in BOX jobs. Never have orphan CMD jobs floating around. Boxes make monitoring, control, and dependency management clean.
+Two — Always set max_run_alarm and min_run_alarm. If a job that normally runs 30 minutes suddenly runs 3 hours, you want to know immediately — not at 6 AM when the business calls.
+Three — Never hardcode dates or paths in JIL. Use global variables for dates and environment-level config files for paths. This makes the design portable and maintainable.
+Four — Always validate output, not just status. Use file watcher jobs downstream of critical data-producing jobs to confirm the output actually exists.
+Five — Use exclude_calendar for holidays. Don't rely on operators to manually hold jobs on public holidays — automate it.
+Six — Document every job's business purpose in the description field. Six months later, when a job fails at midnight, you need to know immediately what it does and who owns it.
+Seven — Test JIL changes in a lower environment first. A JIL syntax error in production can corrupt job definitions.
+These practices ensure that the AutoSys environment is not just functional but resilient, observable, and maintainable — which is exactly what an L2 engineer is expected to deliver."
+
+Bonus — Likely Follow-Up Questions at Hexaware L2
+| Question | Quick Point to Hit |
+| --- | --- |
+| What is the processing day in AutoSys? | The logical date AutoSys uses — starts at a defined time, not midnight |
+| Difference between job restart and force start? | Restart uses original conditions, force start bypasses all |
+| What is n_retrys? | Auto-retries on failure — set wisely on critical jobs |
+| How do you clone a job? | autorep -J jobname -q exports JIL, edit and re-import |
+| What is send_notification? | Sends email alerts on job events — failure, success, overrun |
+
+
+"At L2 level, Hexaware will test whether you can handle a production crisis independently without escalating every 10 minutes. Show them you have a process, you think about downstream impact, you communicate proactively, and you document everything. That's what gets you the offer."
+You said: what is the difference between autosys and apache airflowwhat is the difference between autosys and apache airflowMar 23Claude responded: AutoSys vs Apache Airflow — Interview-Ready AnswerSynthesized comparison between workflow orchestration platformsSynthesized comparison between workflow orchestration platformsAutoSys vs Apache Airflow — Interview-Ready Answer
+
+Start With the Big Picture (Say This First)
+
+"Both AutoSys and Apache Airflow are job scheduling and workflow orchestration tools — but they come from completely different eras, philosophies, and target audiences. AutoSys is an enterprise-grade commercial scheduler built for traditional batch workloads. Airflow is a modern open-source orchestration platform built for data engineering and pipeline automation."
+
+
+Side-by-Side Comparison
+| Factor | AutoSys | Apache Airflow |
+| --- | --- | --- |
+| Type | Commercial / Enterprise | Open Source |
+| Vendor | Broadcom | Apache Software Foundation |
+| Cost | Licensed — expensive | Free |
+| Age | 1990s — battle tested | 2014 — modern |
+| Job Definition | JIL (text-based DSL) | Python code (DAGs) |
+| Primary Users | IT Ops, Batch teams | Data Engineers, ML teams |
+| Scheduling | Time + Event + Dependency | Time + Dependency |
+| UI | Basic web console | Rich modern web UI |
+| Pipeline style | Event-driven | DAG-driven |
+| Cloud Native | No — on-prem first | Yes — cloud native |
+| Scalability | Vertical | Horizontal |
+| Learning Curve | Medium | Medium-High (needs Python) |
+| Community | Vendor support | Massive open source community |
+
+The Core Philosophy Difference
+AutoSys — "Trigger-based Thinking"
+
+AutoSys asks — "When should this job run, and what conditions must be true?"
+
+
+Jobs are independent units connected by conditions
+You define what triggers a job — time, file arrival, another job's success
+Very operations-centric — built for ops teams who don't code
+
+jil/* AutoSys — Job depends on another job */
+insert_job: load_job
+condition: success(transform_job)
+start_times: "05:00"
+
+Airflow — "Pipeline-based Thinking"
+
+Airflow asks — "What is the entire flow from start to finish?"
+
+
+You define the entire pipeline as a DAG (Directed Acyclic Graph) in Python
+Every task, dependency, and flow is written as code
+Very engineering-centric — built for developers who think in workflows
+
+python# Airflow — Entire pipeline defined in Python
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+
+with DAG('etl_pipeline', schedule_interval='0 5 * * *') as dag:
+    extract = BashOperator(task_id='extract', bash_command='extract.sh')
+    transform = BashOperator(task_id='transform', bash_command='transform.sh')
+    load = BashOperator(task_id='load', bash_command='load.sh')
+
+    extract >> transform >> load  # dependency chain
+
+Deep Dive — Key Differences
+
+1. Job Definition Language
+AutoSys uses JIL — a simple text-based DSL. Anyone on the ops team can write it without programming knowledge.
+Airflow uses Python DAGs — you need to be comfortable writing Python code. This is powerful but has a higher barrier to entry.
+
+"In AutoSys, a business analyst can define a job. In Airflow, you need a developer."
+
+
+2. Dependency Handling
+AutoSys — dependencies are condition-based and loosely coupled. Job A and Job B can be defined by completely different teams, and you just wire them together with a condition.
+jilcondition: success(job_A) and success(job_B)
+Airflow — dependencies are tightly coupled inside the DAG. Everything is defined together in one Python file.
+pythontask_a >> task_b >> task_c
+
+"AutoSys is like connecting LEGO bricks from different sets. Airflow is like sculpting the whole thing from one block."
+
+
+3. Retry & Error Handling
+AutoSys:
+jiln_retrys: 3          # simple retry count
+alarm_if_fail: 1     # raise alarm
+Simple but limited.
+Airflow:
+pythondefault_args = {
+    'retries': 3,
+    'retry_delay': timedelta(minutes=5),
+    'on_failure_callback': alert_function,  # custom Python function
+    'retry_exponential_backoff': True        # smart retry
+}
+Much more powerful — you can write custom Python logic for any failure scenario.
+
+4. Monitoring & Visibility
+AutoSys — text-based autorep commands + basic web UI. Works well but feels dated.
+bashautorep -J job_name -d
+Airflow — rich modern web UI with a visual DAG graph, task-level logs, run history, Gantt charts, and color-coded statuses.
+
+"Airflow's UI is a significant advantage for debugging and understanding pipeline flow visually."
+
+
+5. Scalability
+AutoSys — scales vertically. One central Event Server is the brain. Bigger machine = more capacity. This can become a bottleneck at scale.
+Airflow — scales horizontally. Uses a distributed executor model (Celery, Kubernetes) — you just add more worker nodes as load grows.
+
+"For massive data platform workloads, Airflow scales better. For traditional enterprise batch, AutoSys is proven and stable."
+
+
+6. Integration Ecosystem
+AutoSys — integrates with traditional enterprise systems. Strong on mainframe, legacy systems, enterprise middleware.
+Airflow — has 1000+ operators and providers out of the box. Native connectors for AWS, GCP, Azure, Spark, Hive, Snowflake, dbt, Kubernetes, Slack, and more.
+
+"If your stack is modern cloud and data engineering — Airflow's ecosystem is unmatched."
+
+
+7. File Watching
+AutoSys — has a native File Watcher job type (FW). Very simple, built-in.
+jilinsert_job: watch_file
+job_type: FW
+watch_file: /landing/*.csv
+Airflow — no native file watcher. You need sensors like FileSensor or integrate with cloud storage triggers (S3, GCS events).
+
+"For traditional file-based batch triggers, AutoSys is simpler and more direct."
+
+
+When to Use Which
+| Use AutoSys When | Use Airflow When |
+| --- | --- |
+| Large enterprise with existing AutoSys investment | Greenfield modern data platform |
+| Mixed workloads — mainframe, Unix, Windows batch | Cloud-native, data engineering workflows |
+| Ops team manages scheduling without coding | Data engineers own the pipelines |
+| Complex cross-system job dependencies | Complex data transformation pipelines |
+| Regulatory/compliance needs enterprise support | Need rich integrations with modern data tools |
+| Traditional file-based batch processing | ML pipeline orchestration, dbt, Spark |
+
+Real World Analogy
+
+"AutoSys is like a veteran air traffic controller — experienced, reliable, handles complex traffic, proven over decades, but works with older systems and interfaces.
+Airflow is like a modern flight management system — sleek, powerful, integrates with everything, built for today's scale, but needs a skilled team to configure and maintain."
+
+
+The Interview Closing Answer
+
+"In my experience — AutoSys is the right choice for large enterprises with existing batch infrastructure, cross-platform workloads, and ops-centric teams. Airflow is the right choice when you're building modern data platforms, working with cloud services, and have engineering teams comfortable with Python.
+Many large organizations actually run both — AutoSys for legacy batch workloads and Airflow for modern data pipelines — with integration points between the two.
+The key is not which one is better — it's which one fits your team, your stack, and your workload."
+
+
+Bonus — If Hexaware Asks "Why Are Companies Moving from AutoSys to Airflow?"
+
+"Three reasons — cost (AutoSys licensing is expensive), cloud adoption (Airflow is cloud-native, AutoSys is not), and talent (more engineers know Python than JIL). But migration is never simple — AutoSys has complex event-driven patterns and cross-system dependencies that take significant effort to replicate in Airflow. Most enterprises do a phased migration rather than a big bang cutover."
+You said: explain airflow architecture   with their core comphonentsexplain airflow architecture   with their core comphonentsMar 232 / 2Claude responded: Apache Airflow Architecture — Core Components ExplainedOrchestrated comprehensive breakdown of Airflow's architectural componentsOrchestrated comprehensive breakdown of Airflow's architectural componentsApache Airflow Architecture — Core Components Explained
+
+Start With the Big Picture (Say This First)
+
+"Apache Airflow follows a distributed architecture built around one core idea — separate the scheduling logic from the execution logic. The Scheduler decides what to run and when. The Workers actually run it. Everything is coordinated through a message queue and tracked in a metadata database."
+
+Here's the full Airflow architecture broken down with a visual to anchor it.
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation-duration: 0.25s;
+    animation-timing-function: cubic-bezier(0.19, 1, 0.22, 1);
+  }
+VvisualizeVvisualize show_widget
+The Core Components — Deep Dive
+
+1. 🐍 DAG Files (Directed Acyclic Graph)
+
+"The blueprint of your entire pipeline — written in Python."
+
+
+A DAG is a Python file that defines tasks and their dependencies
+Airflow scans a folder (usually /dags) continuously for new or updated DAG files
+The word Acyclic means no circular dependencies — Task A can never eventually depend on itself
+Each run of a DAG is called a DAG Run
+
+pythonfrom airflow import DAG
+from airflow.operators.bash import BashOperator
+from datetime import datetime
+
+with DAG('daily_etl',
+         start_date=datetime(2024,1,1),
+         schedule_interval='0 5 * * *') as dag:
+
+    extract   = BashOperator(task_id='extract',   bash_command='extract.sh')
+    transform = BashOperator(task_id='transform', bash_command='transform.sh')
+    load      = BashOperator(task_id='load',      bash_command='load.sh')
+
+    extract >> transform >> load   # dependency chain
+
+"In AutoSys you write JIL. In Airflow you write Python. That single difference changes everything — who owns it, how it's versioned, and how powerful it can be."
+
+
+2. 🧠 Scheduler (The Brain)
+
+"The equivalent of AutoSys's Event Server."
+
+
+Continuously parses DAG files to detect new pipelines or changes
+Evaluates which tasks are ready to run based on schedule and dependencies
+Pushes ready tasks into the Message Queue
+Does NOT execute tasks itself — it only decides what to run and when
+In Airflow 2.x, the Scheduler is highly available — you can run multiple instances
+
+
+"The Scheduler is stateless — it reads the DAG file, calculates what needs to run, writes it to the Metadata DB, and pushes to the queue. That separation is what makes Airflow scalable."
+
+
+3. 🗄️ Metadata Database (The Memory)
+
+"The equivalent of AutoSys's Oracle/Sybase database."
+
+
+Usually PostgreSQL or MySQL in production
+Stores everything — DAG definitions, task states, run history, variables, connections, XComs
+The Web UI, Scheduler, and Workers all read from and write to this DB
+This is the single source of truth for the entire Airflow environment
+
+
+"If you want to know the status of any task, at any point in time — it's in the Metadata DB. Same concept as AutoSys, different technology."
+
+
+4. 🔴 Message Queue / Broker (The Dispatcher)
+
+"This is what AutoSys doesn't have — and it's why Airflow scales horizontally."
+
+
+Usually Redis or RabbitMQ
+The Scheduler pushes task execution messages into this queue
+Workers pull tasks from the queue independently
+This decoupling means you can add or remove workers without touching the Scheduler
+Used when running the Celery Executor or Kubernetes Executor
+
+
+"The queue is what turns Airflow from a single-machine scheduler into a distributed system. AutoSys pushes jobs to specific agents. Airflow pushes tasks to a queue and any available worker picks it up."
+
+
+5. ⚙️ Workers (The Hands)
+
+"The equivalent of AutoSys Remote Agents."
+
+
+Workers pull tasks from the queue and execute them
+Each worker is an independent process — can run on separate machines
+Reports task status back to the Metadata DB
+You can scale horizontally — just add more worker nodes under high load
+
+Three executor types determine how workers behave:
+| Executor | How it works | Use case |
+| --- | --- | --- |
+| SequentialExecutor | One task at a time, same machine | Dev/testing only |
+| CeleryExecutor | Distributed workers via Redis/RabbitMQ | Production standard |
+| KubernetesExecutor | Each task runs in its own k8s pod | Cloud-native scale |
+
+6. 🌐 Web UI (The Monitor)
+
+"Far more powerful than AutoSys's basic console."
+
+
+Built on Flask — accessible via browser
+Shows DAG graph view, Gantt chart, task logs, run history
+You can trigger DAGs manually, clear failed tasks, mark tasks as success
+Color-coded task states — green = success, red = failure, yellow = running
+
+
+7. 🔔 Triggerer (Async Sensor — Airflow 2.2+)
+
+"A specialized component AutoSys has no equivalent of."
+
+
+Handles deferrable operators — tasks that wait for external events
+Instead of a worker sitting idle waiting for a file or API response, the Triggerer handles the wait asynchronously
+Frees up worker slots for actual compute work
+Example: waiting for an S3 file to arrive — the Triggerer watches, the worker only wakes up when it's ready
+
+
+How It All Flows — Step by Step
+1. WRITE
+   Data engineer writes a Python DAG file
+   and deploys it to the DAGs folder
+
+2. PARSE
+   Scheduler detects the new file
+   and parses the pipeline structure
+
+3. SCHEDULE
+   At the scheduled time (e.g. 5 AM),
+   Scheduler creates a DAG Run
+   and evaluates which tasks are ready
+
+4. QUEUE
+   Scheduler pushes ready tasks
+   into the Message Queue (Redis)
+
+5. PICK UP
+   An available Worker pulls
+   the task from the queue
+
+6. EXECUTE
+   Worker runs the actual script,
+   Spark job, API call, or SQL query
+
+7. REPORT
+   Worker writes SUCCESS or FAILURE
+   back to the Metadata DB
+
+8. CASCADE
+   Scheduler sees the status update,
+   evaluates downstream tasks,
+   and queues the next ones
+
+9. MONITOR
+   You watch it all happen in real-time
+   on the Web UI
+
+Interview Closing Answer
+
+"Airflow's architecture is built around one principle — separate scheduling from execution. The Scheduler decides what runs. The Queue buffers the work. The Workers execute it. Everything is tracked in the Metadata DB. This separation is what allows Airflow to scale horizontally — you just add more workers — whereas AutoSys scales vertically around a single Event Server.
+The biggest architectural difference from AutoSys is that Airflow is DAG-driven and code-first — your entire pipeline is a Python file, version-controlled, testable, and portable. That makes it the tool of choice for modern data engineering teams."
+You said: If critical batch DAGs failed at midnight, how do approach the sceanrio to fix the issueIf critical batch DAGs failed at midnight, how do approach the sceanrio to fix the issueMar 23Claude responded: Critical Airflow DAG Failed at Midnight — Full WalkthroughFormulated systematic troubleshooting strategy for midnight DAG failuresFormulated systematic troubleshooting strategy for midnight DAG failuresCritical Airflow DAG Failed at Midnight — Full Walkthrough
+
+Your Mindset Going In
+
+"Same golden rule as AutoSys — never restart blindly. But in Airflow, you have more tools, better visibility, and more surgical control. You can retry a single task, clear a specific run, or backfill — without touching anything else in the pipeline."
+
+
+Step 1 — Detect & Assess (First 5 Minutes)
+Alert fires. First thing — open the Airflow Web UI and go straight to the DAG.
+Web UI → DAGs → failed_dag → Graph View / Grid View
+What you're looking for:
+
+Which specific task failed — not just the DAG
+What time did it fail
+Is it one task or did the whole DAG collapse
+Are there downstream tasks stuck in upstream_failed state
+Is this a one-off failure or has it been failing for multiple runs
+
+bash# Alternatively via CLI
+airflow dags list-runs --dag-id my_critical_dag
+
+# Check specific task state
+airflow tasks states-for-dag-run my_critical_dag 2024-01-15T00:00:00
+
+"The Grid View in Airflow is your best friend at midnight — it shows every run historically, color-coded by status. You can immediately see if this is a new failure or a recurring pattern."
+
+
+Step 2 — Read the Task Logs (Root Cause First)
+Web UI → DAG → Click the failed task (red box) → Log
+Or via CLI:
+bash# Get logs for the specific failed task and run
+airflow tasks logs my_critical_dag failed_task_id 2024-01-15T00:00:00
+What the log tells you:
+| Log Pattern | Points To |
+| --- | --- |
+| FileNotFoundError | Input file missing — upstream feed issue |
+| OperationalError: DB connection | Database down or credentials expired |
+| TimeoutError | External API or system too slow |
+| ModuleNotFoundError | Dependency missing on worker |
+| Killed / OOM | Worker ran out of memory |
+| Task exited with return code 1 | Script-level failure — check script logs |
+| Task instance did not receive heartbeat | Worker died mid-execution |
+| upstream_failed | This task didn't fail — its parent did |
+
+Step 3 — Check the Worker & Infrastructure
+bash# Is the Airflow scheduler running?
+airflow scheduler --help   # or check the process
+ps -ef | grep "airflow scheduler"
+
+# Check worker health (Celery)
+airflow celery worker --help
+celery -A airflow.executors.celery_executor inspect active
+
+# Check the broker (Redis)
+redis-cli ping   # should return PONG
+
+# Check metadata DB connectivity
+airflow db check
+If using Kubernetes Executor:
+bash# Check if task pods spun up
+kubectl get pods -n airflow | grep my_critical_dag
+
+# Check pod logs
+kubectl logs <pod-name> -n airflow
+
+"In AutoSys you check if the agent is up. In Airflow you check if the worker, broker, and scheduler are healthy. Same concept — different components."
+
+
+Step 4 — Assess Downstream Blast Radius
+This is the step most people skip at midnight.
+bash# See all task states in this DAG run
+airflow tasks states-for-dag-run my_critical_dag 2024-01-15T00:00:00
+Airflow task states to watch:
+| State | Meaning |
+| --- | --- |
+| failed | This task broke |
+| upstream_failed | Parent task failed — this never ran |
+| skipped | Branch condition skipped this task |
+| running | Currently executing |
+| queued | Waiting for a worker |
+| deferred | Waiting on async sensor |
+
+"Tasks showing upstream_failed are NOT broken — they are innocent victims. Once you fix the root task and rerun, these automatically get unblocked. Know the difference before you start force-running things."
+
+
+Step 5 — Fix the Root Cause
+Scenario A — Script / Data Issue
+bash# SSH to the machine and test the script manually
+python /scripts/etl_transform.py --date 2024-01-15
+
+# Fix the data or code issue first, validate it works
+# Then come back to Airflow to rerun
+Scenario B — Missing Input File
+bash# Check if the upstream file arrived
+ls -la /data/landing/feed_20240115.csv
+
+# If missing — coordinate with upstream team
+# Once file arrives — rerun the DAG
+Scenario C — Database Connection Issue
+bash# Test the Airflow connection
+airflow connections test my_db_connection
+
+# Fix credentials or network issue
+# Update the connection in Airflow UI → Admin → Connections
+Scenario D — Worker OOM / Resource Issue
+bash# Check worker memory
+free -m
+top
+
+# If Kubernetes — check pod resource limits
+kubectl describe pod <task-pod> -n airflow
+
+# Increase memory limits or optimize the task
+
+Step 6 — Rerun the Failed Task
+Once root cause is fixed — Airflow gives you surgical control. You don't have to rerun the entire DAG.
+Option 1 — Clear the failed task (most common)
+Web UI → DAG → Graph View → Click failed task
+→ Clear → confirm
+Or via CLI:
+bash# Clear just the failed task — it re-queues and reruns
+airflow tasks clear my_critical_dag \
+  --task-id failed_task_id \
+  --execution-date 2024-01-15T00:00:00 \
+  --yes
+Option 2 — Clear the task and all downstream tasks
+bash# If downstream tasks also need to rerun
+airflow tasks clear my_critical_dag \
+  --task-id failed_task_id \
+  --execution-date 2024-01-15T00:00:00 \
+  --downstream \
+  --yes
+Option 3 — Mark task as success without rerunning
+bash# If the work was done manually outside Airflow
+# and you just need to unblock downstream tasks
+airflow tasks mark-success my_critical_dag \
+  failed_task_id \
+  2024-01-15T00:00:00
+Option 4 — Trigger a full new DAG run
+bash# If you want a completely fresh run
+airflow dags trigger my_critical_dag \
+  --exec-date 2024-01-15T00:00:00
+
+"Clearing a task in Airflow is equivalent to FORCE_STARTJOB in AutoSys. Marking it success is equivalent to CHANGE_STATUS SUCCESS. Same logic — same risk. Never mark success if the work wasn't actually done."
+
+
+Step 7 — Handle Missed Scheduled Runs (Catchup)
+This is unique to Airflow — a concept AutoSys doesn't have.
+If the DAG was paused or down and missed multiple scheduled runs:
+python# In DAG definition — controls whether Airflow
+# reruns all missed intervals automatically
+dag = DAG(
+    'my_critical_dag',
+    catchup=True,   # will backfill all missed runs
+    # catchup=False  # only runs the latest
+)
+bash# Manually backfill missed runs for a date range
+airflow dags backfill my_critical_dag \
+  --start-date 2024-01-10 \
+  --end-date 2024-01-15
+
+"If catchup=True and the scheduler was down for 5 days, Airflow will try to run all 5 missed daily runs when it comes back. In production, this can flood your workers. Always check catchup setting before restarting a scheduler after an outage."
+
+
+Step 8 — Monitor the Rerun
+Don't walk away. Stay on the Web UI.
+DAGs → my_critical_dag → Graph View
+Watch task states change:
+queued → running → success ✅
+bash# Or watch via CLI
+watch -n 10 "airflow tasks states-for-dag-run my_critical_dag 2024-01-15T00:00:00"
+Once the fixed task hits success — watch downstream tasks automatically move from upstream_failed → queued → running → success.
+
+Step 9 — SLA Miss Handling
+Airflow has built-in SLA tracking. If the DAG was supposed to finish by 2 AM and it's now 3 AM:
+python# DAG-level SLA definition
+dag = DAG(
+    'my_critical_dag',
+    sla_miss_callback=my_alert_function,  # triggers on SLA breach
+    default_args={
+        'sla': timedelta(hours=2)  # task should complete in 2 hrs
+    }
+)
+Check who was notified:
+Web UI → Browse → SLA Misses
+
+Step 10 — Communicate & Document
+
+"Same as AutoSys — this is what separates L1 from L2."
+
+
+Notify stakeholders immediately — don't wait for resolution
+Give honest ETA: "Pipeline failed at 12:03 AM, root cause was X, fix applied at 12:45 AM, estimated completion 2:30 AM"
+After resolution — raise an incident ticket with full RCA
+Check if an Airflow alert (email/Slack) should have fired but didn't — fix the alerting gap
+
+
+The Full Mental Flowchart
+DAG Failed Alert
+       │
+       ▼
+Web UI → Grid View
+"Which task? Which run?"
+       │
+       ▼
+Click failed task → Read Logs
+"WHY did it fail?"
+       │
+       ▼
+Check worker/scheduler/broker health
+"Is infrastructure OK?"
+       │
+       ▼
+Map downstream impact
+"upstream_failed vs actual failures?"
+       │
+       ▼
+Fix root cause
+Validate manually FIRST
+       │
+       ▼
+Clear task (not full DAG)
+Surgical rerun
+       │
+       ▼
+Monitor to success
+Watch downstream auto-unblock
+       │
+       ▼
+Check catchup/backfill needs
+"Any missed runs?"
+       │
+       ▼
+Communicate ETA
+Document RCA
+
+Interview-Ready Spoken Answer
+
+"When a critical Airflow DAG fails at midnight, the first thing I do is open the Web UI and go to the Grid View — that immediately tells me which specific task failed, at what time, and whether it's a new failure or recurring pattern.
+I never look at the DAG level — I zoom into the task level. Because in Airflow, a DAG failure is always one or more tasks failing. I click the red task and read the logs directly in the UI — that usually tells me the root cause within a minute.
+While reading logs I'm also noting how many tasks are in upstream_failed state — those are innocent, they didn't fail, they just never ran because their parent failed. I don't touch those.
+Then I check infrastructure — is the scheduler running, are workers healthy, is Redis up, can Airflow reach the metadata DB. If any of these are down, that's my root cause.
+Once I've fixed the root cause and validated the fix manually, I use Clear task with downstream in the UI — which re-queues just the failed task and everything after it. I never rerun the full DAG unless necessary — Airflow gives you surgical precision and I use it.
+One thing unique to Airflow — I always check the catchup setting. If the DAG was down and missed multiple runs, a naive scheduler restart can flood the workers trying to backfill everything at once. I control that explicitly.
+Throughout all of this — I'm communicating. Stakeholders get an update within 10 minutes: what failed, why, what I'm doing, and when they can expect the pipeline to complete.
+My rule — diagnose first, fix second, rerun third, communicate throughout."
+
+
+Bonus — Airflow vs AutoSys Recovery: Key Differences
+| Scenario | AutoSys | Airflow |
+| --- | --- | --- |
+| Rerun failed job | sendevent FORCE_STARTJOB | Clear task in UI or CLI |
+| Mark done without running | CHANGE_STATUS SUCCESS | mark-success command |
+| Check why it failed | autorep -d + server logs | Click task → Logs in Web UI |
+| Handle missed runs | Manual force-start each | backfill command or catchup |
+| Rerun only downstream | Not straightforward | Clear --downstream |
+| Real-time monitoring | autorep polling | Live Web UI graph |
+
+"Airflow gives you more control and better visibility than AutoSys during an incident — but you need to understand task states deeply, especially the difference between failed and upstream_failed, or you'll end up rerunning things that don't need rerunning and making the situation worse."
