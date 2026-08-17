@@ -50,7 +50,7 @@ class C:
 # ─────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────
-AIRFLOW_VERSION  = "2.9.2"
+AIRFLOW_VERSION  = "3.3.1"
 AIRFLOW_HOME     = os.path.expanduser("~/airflow")
 VENV_DIR         = os.path.expanduser("~/airflow-env")
 AIRFLOW_PORT     = 8080
